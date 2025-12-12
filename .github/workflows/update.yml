@@ -1,44 +1,39 @@
-name: Update VPN List
+name: Accumulate VPN List
 
-# این بخش تعیین می‌کند چه زمانی این اکشن اجرا شود
 on:
   schedule:
-    # این یک دستور CRON است. یعنی: دقیقه 0، هر ساعت، هر روز، هر ماه، هر روز هفته
-    # یعنی سر هر ساعت (1:00, 2:00, ...) اجرا می‌شود
-    - cron: '0 * * * *'
-  # این خط اجازه می‌دهد دکمه دستی "Run" هم داشته باشی
+    - cron: '0 * * * *' # اجرا در هر ساعت
   workflow_dispatch:
 
 jobs:
   update-list:
-    runs-on: ubuntu-latest # سیستم عامل لینوکس مجازی
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
-      # گام ۱: دریافت آخرین نسخه کدها از مخزن
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # گام ۲: دانلود فایل از سایت اصلی با دستور لینوکسی curl
-      - name: Download CSV from VPN Gate
-        run: |
-          # -L یعنی ریدایرکت‌ها را دنبال کن
-          # -o یعنی خروجی را در فایلی به نام server_list.csv ذخیره کن
-          curl -L "http://www.vpngate.net/api/iphone/" -o server_list.csv
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-      # گام ۳: ذخیره تغییرات در گیت (کامیت و پوش)
+      - name: Install requests
+        run: pip install requests
+
+      - name: Run Collector Script
+        run: python collector.py
+
       - name: Commit and Push changes
         run: |
-          # تنظیم ایمیل و نام فیک برای ربات
-          git config --global user.name 'VPN Updater Bot'
+          git config --global user.name 'VPN Collector Bot'
           git config --global user.email 'bot@noreply.github.com'
-          
-          # اضافه کردن فایل به استیج
           git add server_list.csv
-          
-          # بررسی اینکه آیا فایل واقعا تغییر کرده یا نه (برای جلوگیری از کامیت خالی)
           if git diff --staged --quiet; then
-            echo "No changes detected."
+            echo "No new servers found or updated."
           else
-            git commit -m "Auto-update VPN list: $(date)"
+            git commit -m "Update VPN list: $(date)"
             git push
           fi
