@@ -43,10 +43,8 @@ def get_remote_list():
             parts = line.split(',')
             
             # --- حذف ستون OpenVPN_ConfigData_Base64 ---
-            # معمولا این ستون آخرین ستون است (ستون 14). ما آن را حذف می‌کنیم.
-            # با این کار فقط تا قبل از آخرین کاما نگه داشته می‌شود.
             if len(parts) > 14:
-                parts = parts[:-1] # حذف آخرین آیتم (کانفیگ)
+                parts = parts[:-1]
             
             if line.startswith('#HostName'):
                 header = parts
@@ -68,7 +66,6 @@ def load_gist_data():
         files = r.json().get('files', {})
         if GIST_FILENAME in files:
             content = files[GIST_FILENAME].get('content', '')
-            # تبدیل محتوای متنی به دیکشنری برای پردازش
             data_dict = {}
             header = None
             reader = csv.reader(content.splitlines())
@@ -133,36 +130,26 @@ def filter_dead_servers(servers_dict):
 
 def main():
     if not GIST_ID or not GIST_TOKEN:
-        print("Error: GIST_ID or GIST_TOKEN not set!")
+        print("Error: GIST_ID or GIST_TOKEN not set in Secrets!")
         return
 
-    # 1. خواندن از Gist
     local_data, local_header = load_gist_data()
-    
-    # 2. خواندن از سایت (با حذف ستون اضافی)
     new_header, new_rows = get_remote_list()
     
     final_header = local_header if local_header else new_header
 
-    # 3. ادغام
     if new_rows:
         for row in new_rows:
             ip = row[1]
             local_data[ip] = row
 
-    # 4. فیلتر کردن
     valid_servers = filter_dead_servers(local_data)
 
-    # 5. ساخت خروجی CSV و آپدیت Gist
     if valid_servers:
         output = io.StringIO()
         writer = csv.writer(output)
-        # خط اول استاندارد (اختیاری)
-        # output.write("*vpn_servers\n") 
-        
         if final_header:
             writer.writerow(final_header)
-            
         for ip in valid_servers:
             writer.writerow(valid_servers[ip])
             

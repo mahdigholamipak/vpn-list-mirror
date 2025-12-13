@@ -23,7 +23,6 @@ jobs:
 
       - name: Run Collector
         env:
-          # این دو متغیر را در Secrets ریپازیتوری ست کنید
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: python collector.py
