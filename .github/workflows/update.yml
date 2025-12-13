@@ -1,15 +1,13 @@
-name: Accumulate VPN List
+name: Update Hidden Gist
 
 on:
   schedule:
-    - cron: '0 * * * *' # اجرا در هر ساعت
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:
-  update-list:
+  update-gist-job:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     
     steps:
       - name: Checkout repository
@@ -23,17 +21,9 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Run Collector Script
+      - name: Run Collector
+        env:
+          # این دو متغیر را در Secrets ریپازیتوری ست کنید
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: python collector.py
-
-      - name: Commit and Push changes
-        run: |
-          git config --global user.name 'VPN Collector Bot'
-          git config --global user.email 'bot@noreply.github.com'
-          git add server_list.csv
-          if git diff --staged --quiet; then
-            echo "No new servers found or updated."
-          else
-            git commit -m "Update VPN list: $(date)"
-            git push
-          fi
