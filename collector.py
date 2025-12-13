@@ -16,11 +16,9 @@ TIMEOUT_SECONDS = 2.0
 MAX_WORKERS = 50
 VPN_PORT = 443
 
-# ایندکس ستون‌هایی که می‌خواهیم نگه داریم (بر اساس فایل اصلی VPN Gate)
-# 0:HostName, 1:IP, 2:Score, 3:Ping, 4:Speed, 5:CountryLong, 6:CountryShort
-# 7:NumVpnSessions, 8:Uptime, 10:TotalTraffic
-# ستون‌های حذف شده: 9:TotalUsers, 11:LogType, 12:Operator, 13:Message, 14:Config
-KEEP_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10]
+# ایندکس‌های مورد نیاز طبق درخواست شما:
+# 0:HostName, 1:IP, 4:Speed, 5:CountryLong, 6:CountryShort, 7:NumVpnSessions
+KEEP_INDICES = [0, 1, 4, 5, 6, 7]
 
 def get_gist_headers():
     return {
@@ -30,7 +28,6 @@ def get_gist_headers():
 
 def filter_columns(row):
     """انتخاب فقط ستون‌های مورد نظر از یک ردیف"""
-    # اگر طول ردیف کمتر از حداکثر ایندکس ما باشد، ممکن است خطا دهد، پس چک می‌کنیم
     if len(row) <= max(KEEP_INDICES):
         return None
     return [row[i] for i in KEEP_INDICES]
@@ -86,8 +83,9 @@ def load_gist_data():
                 if row[0].startswith('#HostName'):
                     header = row
                     continue
-                # اینجا فرض می‌کنیم دیتای توی Gist قبلاً فیلتر شده است
-                # یا اگر فرمت قدیمی است، با IP که کلید است آپدیت می‌شود
+                
+                # نکته مهم: اینجا باید مطمئن شویم داده‌های قبلی فرمت درست دارند
+                # IP در لیست فیلتر شده ما در ایندکس 1 است (چون 0=HostName و 1=IP)
                 if len(row) > 1:
                     ip = row[1]
                     data_dict[ip] = row
@@ -112,7 +110,7 @@ def update_gist(content_string):
         print(f"Error updating Gist: {e}")
 
 def check_server_connectivity(server_row):
-    # در لیست جدید، IP همچنان در ایندکس 1 است (چون 0 و 1 را حذف نکردیم)
+    # در لیست فیلتر شده جدید ما، IP همچنان در ایندکس 1 است.
     ip = server_row[1]
     try:
         with socket.create_connection((ip, VPN_PORT), timeout=TIMEOUT_SECONDS):
@@ -144,19 +142,14 @@ def main():
     local_data, local_header = load_gist_data()
     new_header, new_rows = get_remote_list()
     
-    # اولویت با هدر جدید است چون ستون‌هایش کمتر شده
+    # همیشه هدر جدید را ترجیح می‌دهیم تا فرمت درست اعمال شود
     final_header = new_header if new_header else local_header
 
+    # اگر از سایت دیتا گرفتیم، مرج می‌کنیم
     if new_rows:
         for row in new_rows:
-            ip = row[1]
+            ip = row[1] # IP در ایندکس 1 است
             local_data[ip] = row 
-
-    # نکته: اگر فایل قبلی فرمت قدیمی (ستون‌های زیاد) داشته باشد
-    # و فایل جدید فرمت کم‌حجم، ممکن است در اولین اجرا ترکیب ناهمگونی ایجاد شود.
-    # اما چون ما کل سطر را جایگزین می‌کنیم (local_data[ip] = row)،
-    # سرورهای جدید فرمت درست می‌گیرند.
-    # برای یکدست شدن کامل، بهتر است یک بار دستی محتوای Gist را پاک کنید (یا خالی کنید).
 
     valid_servers = filter_dead_servers(local_data)
 
@@ -168,19 +161,12 @@ def main():
             writer.writerow(final_header)
             
         for ip in valid_servers:
-            # یک چک نهایی برای اطمینان از اینکه فقط ستون‌های درست ذخیره می‌شوند
-            # (مخصوصاً اگر دیتای قدیمی با ستون‌های زیاد در دیکشنری مانده باشد)
             row = valid_servers[ip]
-            if len(row) == len(KEEP_INDICES): 
-                 writer.writerow(row)
-            elif len(row) > len(KEEP_INDICES):
-                 # اگر ردیفی از قبل مانده که ستون اضافی دارد، آن را فیلتر کن
-                 # (برای تبدیل دیتای قدیمی به جدید در اولین اجرا)
-                 # اما چون ایندکس‌ها به هم ریخته، بهتر است فقط ردیف‌های جدید را اعتماد کنیم
-                 # یا اینکه تابع filter_columns را اینجا هم صدا بزنیم اگر مطمئنیم سورس اصلیه
-                 pass # ساده‌ترین کار: در اجراهای بعدی خود به خود درست می‌شود
-                 writer.writerow(row) # فعلا می‌نویسیم
-
+            # فقط ردیف‌هایی که دقیقاً ۶ ستون دارند را نگه دار
+            # (این باعث می‌شود اگر دیتای قدیمیِ خراب مانده بود، حذف شود)
+            if len(row) == len(KEEP_INDICES):
+                writer.writerow(row)
+            
         update_gist(output.getvalue())
     else:
         print("No valid servers.")
