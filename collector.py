@@ -16,9 +16,11 @@ URL = "http://www.vpngate.net/api/iphone/"
 TIMEOUT_SECONDS = 3.0
 MAX_WORKERS = 50
 VPN_PORT = 443
-MAX_SERVERS = 100  # محدودیت ۱۰۰ سرور برتر
 
-# ایندکس‌های مورد نیاز برای خروجی نهایی:
+MAX_SERVERS = 100          # سقف نهایی تعداد سرورها در فایل
+CHECK_NEW_CANDIDATES = 50  # تعداد سرورهای جدیدی که در هر دور برای ورود به لیست رقابت می‌کنند
+
+# ایندکس‌های مورد نیاز (خروجی):
 # 0:HostName, 1:IP, 4:Speed, 5:CountryLong, 6:CountryShort, 7:NumVpnSessions
 KEEP_INDICES = [0, 1, 4, 5, 6, 7]
 
@@ -29,12 +31,13 @@ def get_gist_headers():
     }
 
 def filter_columns(row):
+    """انتخاب فقط ستون‌های مورد نظر"""
     if len(row) <= max(KEEP_INDICES):
         return None
     return [row[i] for i in KEEP_INDICES]
 
 def get_remote_list():
-    """دانلود لیست خام از سایت"""
+    """دانلود و پارس کردن لیست از سایت اصلی"""
     try:
         print("Downloading from VPN Gate...")
         response = requests.get(URL, timeout=15)
@@ -51,25 +54,19 @@ def get_remote_list():
                 continue
             
             parts = line.split(',')
-            
-            # فیلتر کردن اولیه ستون‌ها
             filtered = filter_columns(parts)
             if not filtered: continue
 
             if line.startswith('#HostName'):
                 header = filtered
             else:
-                # --- فیلتر حذف سشن صفر ---
-                # ایندکس 7 در لیست کامل همان NumVpnSessions است.
-                # اما چون ما filter_columns را صدا زدیم، باید ببینیم در لیست جدید کجاست.
-                # KEEP_INDICES = [0, 1, 4, 5, 6, 7]
-                # پس NumVpnSessions در لیست فیلتر شده، آخرین عنصر (ایندکس 5) است.
+                # فیلتر اولیه: حذف سرورهای با سشن 0 یا سرعت نامعتبر
                 try:
-                    sessions = int(filtered[5])
-                    if sessions > 0:
+                    # در لیست فیلتر شده: index 2 = Speed, index 5 = Sessions
+                    if int(filtered[5]) > 0:
                         data_rows.append(filtered)
-                except ValueError:
-                    continue # اگر عدد نبود رد کن
+                except:
+                    continue
 
         return header, data_rows
     except Exception as e:
@@ -93,7 +90,7 @@ def load_gist_data():
                 if row[0].startswith('#HostName'):
                     header = row
                     continue
-                if len(row) == len(KEEP_INDICES): # فقط ردیف‌های سالم
+                if len(row) == len(KEEP_INDICES):
                     ip = row[1]
                     data_dict[ip] = row
             return data_dict, header
@@ -103,7 +100,7 @@ def load_gist_data():
         return {}, None
 
 def update_gist(content_string):
-    print("Updating Gist with new list...")
+    print("Updating Gist with optimized list...")
     try:
         data = { "files": { GIST_FILENAME: { "content": content_string } } }
         r = requests.patch(
@@ -117,7 +114,7 @@ def update_gist(content_string):
         print(f"Error updating Gist: {e}")
 
 def check_server_sstp(server_row):
-    """بررسی سلامت سرور با هندشیک SSL"""
+    """بررسی اتصال SSTP (SSL Handshake)"""
     ip = server_row[1]
     context = ssl.create_default_context()
     context.check_hostname = False
@@ -131,8 +128,8 @@ def check_server_sstp(server_row):
         return None
 
 def filter_servers_concurrent(server_list):
-    """چک کردن لیست ورودی به صورت همزمان"""
-    print(f"Checking connectivity for {len(server_list)} candidates...")
+    """تست همزمان لیستی از سرورها"""
+    print(f"Checking connectivity for {len(server_list)} servers...")
     alive_dict = {}
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -148,10 +145,10 @@ def filter_servers_concurrent(server_list):
 
 def calculate_score(row):
     """
-    محاسبه امتیاز بر اساس فرمول: Speed / (Sessions + 1)
-    در لیست فیلتر شده ما (KEEP_INDICES):
-    Speed           -> index 2
-    NumVpnSessions  -> index 5
+    امتیاز = Speed / (Sessions + 1)
+    در لیست فیلتر شده (KEEP_INDICES):
+    row[2] -> Speed
+    row[5] -> NumVpnSessions
     """
     try:
         speed = float(row[2])
@@ -165,69 +162,59 @@ def main():
         print("Error: Secrets not set!")
         return
 
-    # 1. خواندن لیست موجود
+    # 1. خواندن و تست سرورهای فعلی (Survivors)
     local_data, local_header = load_gist_data()
-    print(f"Current Gist servers: {len(local_data)}")
-
-    # 2. پالایش لیست موجود
-    alive_local = filter_servers_concurrent(list(local_data.values()))
-    print(f"Alive servers from Gist: {len(alive_local)}")
-
-    # 3. محاسبه ظرفیت خالی
-    slots_needed = MAX_SERVERS - len(alive_local)
-    print(f"Slots available: {slots_needed}")
-
-    # 4. تکمیل ظرفیت از لیست جدید
-    final_header = local_header
+    print(f"Local servers before check: {len(local_data)}")
     
-    if slots_needed > 0:
-        new_header, new_rows = get_remote_list()
-        final_header = new_header if new_header else local_header
-        
-        # پیدا کردن کاندیداهای جدید (غیر تکراری)
-        candidates = []
+    alive_local = filter_servers_concurrent(list(local_data.values()))
+    print(f"Local servers alive: {len(alive_local)}")
+
+    # 2. دریافت و آماده‌سازی کاندیداهای جدید (Challengers)
+    new_header, new_rows = get_remote_list()
+    final_header = new_header if new_header else local_header
+    
+    candidates = []
+    if new_rows:
+        # فقط کسانی که الان در لیست نیستند را کاندید می‌کنیم
         for row in new_rows:
             ip = row[1]
             if ip not in alive_local:
                 candidates.append(row)
         
-        print(f"Potential new candidates: {len(candidates)}")
-        
-        # مرتب‌سازی کاندیداها قبل از تست (تا تست را روی بهترین‌ها انجام دهیم)
-        # این کار باعث می‌شود اگر فقط ۱۰ جای خالی داریم، ۱۰ تای اول لیست که
-        # احتمالا سرعت بهتری دارند را چک کنیم، نه ۱۰ تای رندوم.
+        # مرتب‌سازی کاندیداها بر اساس امتیاز (تا بهترین‌هایشان را تست کنیم)
         candidates.sort(key=calculate_score, reverse=True)
         
-        # تست سرورهای جدید
-        alive_new = filter_servers_concurrent(candidates)
-        print(f"Alive new candidates: {len(alive_new)}")
+        # انتخاب تعداد محدودی کاندیدا برای تست (مثلا 50 تا)
+        # این کار برای صرفه‌جویی در زمان اجراست
+        candidates_to_check = candidates[:CHECK_NEW_CANDIDATES]
+        print(f"New candidates selected for testing: {len(candidates_to_check)}")
         
-        # پر کردن لیست نهایی با سرورهای جدید (تا سقف مجاز)
-        # چون کاندیداها سورت شده بودند، alive_new هم ترتیب تقریبی خوبی دارد
-        # اما برای اطمینان دوباره سورت نهایی را انجام می‌دهیم.
+        # تست کاندیداهای جدید
+        alive_new = filter_servers_concurrent(candidates_to_check)
+        print(f"New servers passed test: {len(alive_new)}")
         
-        for ip, row in alive_new.items():
-            if len(alive_local) >= MAX_SERVERS:
-                break
-            alive_local[ip] = row
-            
-    else:
-        print("List is full. No need to fetch new servers.")
+        # ادغام زنده‌های قدیمی با زنده‌های جدید
+        alive_local.update(alive_new)
 
-    # 5. مرتب‌سازی نهایی و ذخیره
-    print(f"Final list size: {len(alive_local)}")
+    # 3. رقابت نهایی و برش لیست (The Hunger Games!)
+    print(f"Total pool size: {len(alive_local)}")
     
     if alive_local:
+        # مرتب‌سازی کل استخر بر اساس امتیاز
+        sorted_rows = sorted(alive_local.values(), key=calculate_score, reverse=True)
+        
+        # انتخاب 100 تای برتر (Top 100)
+        final_list = sorted_rows[:MAX_SERVERS]
+        print(f"Servers kept after cutoff: {len(final_list)}")
+
+        # ذخیره‌سازی
         output = io.StringIO()
         writer = csv.writer(output)
         
         if final_header:
             writer.writerow(final_header)
-        
-        # مرتب‌سازی نهایی بر اساس فرمول Speed / (Sessions + 1)
-        sorted_rows = sorted(alive_local.values(), key=calculate_score, reverse=True)
-        
-        for row in sorted_rows:
+            
+        for row in final_list:
             writer.writerow(row)
             
         update_gist(output.getvalue())
@@ -236,4 +223,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
